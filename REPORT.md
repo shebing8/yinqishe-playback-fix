@@ -8,12 +8,13 @@
 
 ## 1. 结论
 
-原始诉求「在线播放卡顿」实际是**两个独立缺陷**，都已修复并在设备上实测通过：
+原始诉求「在线播放卡顿」实际是**三个独立缺陷**，都已修复并在设备上实测通过：
 
 | # | 症状 | 根因 | 修复手段 | 状态 |
 |---|---|---|---|---|
 | A | 播放几秒就冻结/反复缓冲 | app 把 mpv 前向缓冲压到 `demuxer-readahead-secs≈1s`，分片一慢就 underrun | gadget hook `libmpv.so`，按 handle 强设 readahead=30s / 96MiB，并拦截 app 自己的窄参数 | ✅ 实测 |
 | B | 只能看 12 秒，之后停在 12s | 服务端签发的 `auth_key` 第三段首位 flag=0 → CDN `authPath` 只返回 12s 试看列表 | gadget 拦 Dart 层的 `authKey` 字符串，原地等长替换成合法签名的 1 前缀 key，并按 4 分钟周期现签续期 | ✅ 实测 |
+| C | 竖屏视频进全屏被强制横屏，画面缩成中间一条、上下大片黑边 | media_kit_video 的全屏默认无条件请求横屏族方向（`Activity.setRequestedOrientation(11)`），不看视频宽高 | Java 层 hook `setRequestedOrientation(int)`：横屏族请求（0/6/8/11）先经 mpv 读当前视频宽高（按 rotate 修正），竖屏改写为同语义竖屏族（1/7/9/12），横屏与读不到宽高时原样放行 | ✅ 实测 |
 
 交付物：**一个可直接安装的重量级 APK**（`gadget_pack/gadget_full_signed.apk`，66.0 MiB），内置 frida-gadget + 常驻 JS，装机后无需 PC、无需 frida-server、无需手动注入即可长期工作。
 
@@ -61,9 +62,9 @@ base.apk (md5 23511d32…)                     ← 原始安装包
 
 派生的 ELF 结果按输入 sha256 缓存在 `gadget_pack/.cache/`，重复打包不再跑 LIEF。
 
-### 2.4 JS 逻辑（两份源，同一个 bundle）
+### 2.4 JS 逻辑（三份源，同一个 bundle）
 
-`gadget/entry.js` = `frida-java-bridge` + `require('./full_play.js')` + `require('./mpv_tune.js')`。
+`gadget/entry.js` = `frida-java-bridge` + `require('./full_play.js')` + `require('./mpv_tune.js')` + `require('./orient_fix.js')`。
 
 **`full_play.js`（12 秒 → 正片）**
 - `auth_key` 格式（CDN A 型签名）：`^(\d{10})-([0-9a-f]{32})-([01])(\d{8})-([0-9a-f]{32})$`
@@ -83,6 +84,13 @@ base.apk (md5 23511d32…)                     ← 原始安装包
 - 三管齐下（v4，前两版都踩过坑）：① `mpv_wait_event` 里**按 handle** 首次出现即 `mpv_set_property_string`；② 拦 `mpv_set_property_string` / `mpv_set_option_string` 的入参，把 app 下发的窄缓冲值就地换成目标；③ 每 1s `mpv_get_property` 回读，偏差 >2% 再设一遍。
 - 教训（已写进项目记忆）：v2 只对首次看到的 handle 生效，app 每个视频新建 handle → 仍是 1s；v3 发现 `mpv_initialize` 之前 set_property 返回 rc=0 但不生效，所以必须有回读纠偏。
 - 每 10s 打一条 `stat duration=… cache=…`；`duration>20` 即可判定拿到的是正片列表（试看只有 12s）。
+- 顺带职责：`mpv_wait_event` 的 `onEnter` 里持续刷新 `globalThis.__mpvCur = {ptr: handle, ts: now}`，给 `orient_fix.js` 提供「当前播放 handle」。
+
+**`orient_fix.js`（全屏方向自适应）**
+- 根因：media_kit_video 的 `defaultEnterNativeFullscreen` 无条件 `SystemChrome.setPreferredOrientations([landscapeLeft, landscapeRight])` → PlatformPlugin → `Activity.setRequestedOrientation(11)`；竖屏片进全屏被横过来，画面只占中间一条。退出全屏走 `setPreferredOrientations([])` → `-1`（UNSPECIFIED），与横竖屏族不重叠，不需要处理。
+- 做法：Java 层拦 `Activity.setRequestedOrientation(int)`，只看横屏族 `0/6/8/11`（`SCREEN_ORIENTATION_*` landscape 家族），按映射 `{0:1, 6:7, 8:9, 11:12}` 改写成同语义竖屏族；其余值原样放行。
+- 宽高来源：`mpv_get_property` 读当前 handle 的 `width` / `height`（先 INT64 后 STRING 两种格式都试），`video-params/rotate` 为 90/270 时交换；handle 用 `__mpvCur`，仅认 5s 内的刷新，读不到再用 30s 内的缓存兜底，再没有就放行 —— 宁可漏修也不误转。
+- 日志：判词去重（同一片反复进出全屏只记一次），写到 `gadget_play.log`（文件行不带 `[orient]` 前缀，grep 用 `方向`）。
 
 ### 2.5 构建与安装命令
 
@@ -104,7 +112,7 @@ python play_watch.py 12 45               # 长播漂移监控
 MSYS_NO_PATHCONV=1 adb -s 55434d6 shell su -c 'tail -40 /data/data/com.example.yinqishe_app/gadget_play.log'
 ```
 
-复现校验：`python gadget/build_script.py` 现在产出 `gadget/full_play.script.js` = **917 798 B**，md5 `5c043309b8d4252aed1c01363ea6ea17`，与设备上 `/data/app/…/lib/arm64/libgadget.script.so` **逐字一致**（2026-10-06 13:01 持久化版复核）。构建脚本自报的 `helpers + bundle` 两段只是编译阶段计数，与最终文件长度不是一一对应，核对以最终文件的 md5 为准；上一版（按进程 `MINT_MAX` 计数）是 916 283 B / `9f11d582…`。
+复现校验：`python gadget/build_script.py` 现在产出 `gadget/full_play.script.js` = **922 558 B**，md5 `8be5ad61336e358c2115c56c08682e98`，与设备上 `/data/app/…/lib/arm64/libgadget.script.so` **逐字一致**（2026-10-06 14:13 方向自适应版复核）。构建脚本自报的 `helpers + bundle` 两段只是编译阶段计数，与最终文件长度不是一一对应，核对以最终文件的 md5 为准；上一版（无 `orient_fix`）是 917 798 B / `5c043309…`。
 
 ---
 
@@ -123,6 +131,13 @@ MSYS_NO_PATHCONV=1 adb -s 55434d6 shell su -c 'tail -40 /data/data/com.example.y
 - 同一安装包 60s 采样：`平均 49.1 fps`、`低于 24fps 的 0.5s 桶 = 0/119`、帧间隔 `中位 16.5ms / p90 33.1ms / 最大 50ms`、`>120ms 掉帧 0 次`
 - 缓冲对照（医馆笑传 20787，720p h264 30fps，约 0.65MB/s）：修复前 demuxer 缓冲中位 **2.5s**、15% 采样 <1s、2 次 underrun、8 次进度不前进；修复后中位 **101s**、underrun **0**
 
+**C：竖屏全屏不转横（8be5ad61 版实测）**
+- hook 装载即生效：`06:14:13 方向自适应 hook 已装（竖屏视频全屏不再转横）`（gadget_play.log，行无 `[orient]` 前缀）
+- 竖屏片（544x720）进全屏：`06:14:36 方向请求 11 但视频 544x720 是竖屏 -> 改为 12`；此后 `dumpsys window displays` 始终 `mRotation=0`，全屏控件布局铺满 1080x2376（全屏 ImageView 落在屏幕右下 `[912,2268][1056,2376]`，与嵌入态的 `[912,620][1056,728]` 同构），播放持续推进（16:56 → 18:00）
+- 横屏片（1280x720）进全屏：`06:29:40 方向请求 11，视频 1280x720 横屏，放行` —— 放行分支不动原请求，横竖交由系统按请求处理
+- 切回竖屏片再进全屏：`06:30:07 方向请求 11 但视频 544x720 是竖屏 -> 改为 12`，`mRotation` 仍为 0
+- 退全屏 `setRequestedOrientation(-1)` 不产生日志（设计如此）；验证驱动全程 `uiautomator dump` + `dumpsys`，无截图；最后由用户真机复核「竖屏竖屏全屏、横屏横屏全屏」确认通过
+
 **自愈 / 持久化（13:01 持久化版实测）**
 - 冷启动读回：新进程 `05:01:47 读回备用游客 sub=12517741` → 立刻 `状态码 200` 现签，`gadget_bak.txt` 跨进程有效。
 - 节流窗口跨进程生效：把 `gadget_bak.txt` 临时改名、并写入 6 条**窗口内**时间戳后重启 →`05:08:10 免费片 20787/20954 对 app 号（sub=12507099）只给 0 前缀，配额已尽` → `05:08:10 换号节流：30 分钟内已换 6 个，等下一轮` → 不再打 `POST /api/user/traveler`（证明读盘 + 窗口过滤 + 拒签都走通）。
@@ -137,10 +152,10 @@ MSYS_NO_PATHCONV=1 adb -s 55434d6 shell su -c 'tail -40 /data/data/com.example.y
 
 | 路径 | 说明 | 大小 / md5 |
 |---|---|---|
-| `gadget_pack/gadget_full_signed.apk` | **最终交付包**，可直接 `install -r` | 69 260 671 B ｜ `7f7861a3…` |
+| `gadget_pack/gadget_full_signed.apk` | **最终交付包**，可直接 `install -r` | 69 264 767 B ｜ `711ac31f…` |
 | `gadget_pack/gadget_full_signed.apk.idsig` | apksigner 增量签名旁挂文件 | 558 596 B |
-| `gadget/full_play.script.js` | 编译后的常驻脚本（= 设备上的 `libgadget.script.so`） | 917 798 B ｜ `5c043309…` |
-| `gadget/full_play.js` `gadget/mpv_tune.js` `gadget/entry.js` | 脚本源（两条修复线） | — |
+| `gadget/full_play.script.js` | 编译后的常驻脚本（= 设备上的 `libgadget.script.so`） | 922 558 B ｜ `8be5ad61…` |
+| `gadget/full_play.js` `gadget/mpv_tune.js` `gadget/orient_fix.js` `gadget/entry.js` | 脚本源（三条修复线） | — |
 | `gadget/build_script.py` `gadget/libgadget.so` `gadget/node_modules` | 构建工具链（frida-compile 19 + frida-java-bridge） | libgadget `b36c995b…` |
 | `gadget_pack.py` `gadget_pack/.cache/` | APK 组装器 + ELF 派生缓存 | — |
 | `static_patch/` | 静态补丁层与基线产物（**只读**） | patched_signed `433b1082…` |
@@ -156,7 +171,7 @@ MSYS_NO_PATHCONV=1 adb -s 55434d6 shell su -c 'tail -40 /data/data/com.example.y
 
 ### 4.1 发布范围（GitHub 仓库）
 
-仓库只收**源码 + 脚本 + 文档 + 环境声明**：`README.md`、`.gitignore`、`.gitattributes`、`requirements.txt`、`LICENSE`、本 `REPORT.md`、`creds/README.md`、`gadget/{entry,full_play,mpv_tune}.js`、`gadget/build_script.py`、`gadget/package.json`、`gadget/package-lock.json`（锁 frida-compile 19.1.0 / frida-java-bridge 7.0.13，`npm ci` 用）、`gadget_pack.py`、`flutter_static_patch.py`、四个取证脚本与三个验证脚本。
+仓库只收**源码 + 脚本 + 文档 + 环境声明**：`README.md`、`.gitignore`、`.gitattributes`、`requirements.txt`、`LICENSE`、本 `REPORT.md`、`creds/README.md`、`gadget/{entry,full_play,mpv_tune,orient_fix}.js`、`gadget/build_script.py`、`gadget/package.json`、`gadget/package-lock.json`（锁 frida-compile 19.1.0 / frida-java-bridge 7.0.13，`npm ci` 用）、`gadget_pack.py`、`flutter_static_patch.py`、四个取证脚本与三个验证脚本。
 
 被 `.gitignore` 排除的三类：**目标 app 与第三方二进制**（`base.apk`、`static_patch/`、`so/`、`blutter/`、`blutter_output/`、`gadget/libgadget.so`、`gadget/node_modules/`）、**构建产物**（`gadget/full_play.script.js`、`gadget_pack/`，按 §2.5 可复现出同一 md5）、**凭据与调试输出**（`creds/*`、`*.log`、`ui_*.xml`、图片视频）。硬编码值也已改为从 `creds/` 或命令行读取：`api_probe.py` 的 `deviceId`、`mint_probe.py` / `quota_probe.py` 的默认 API 域名、keystore 口令（`PATCH_KS_PASS`，默认值保持本地可建）。
 
@@ -179,6 +194,7 @@ MSYS_NO_PATHCONV=1 adb -s 55434d6 shell su -c 'tail -40 /data/data/com.example.y
 10. 服务端 1 前缀权限回归的复现与判定（额度只按真实观看计）
 11. 装回含 `full_play` 的正式包，正片 + 流畅双达标
 12. **续号状态持久化**：`MINT_MAX=4`（按进程）换成 `gadget_mint.txt` 的 30 分钟滚动窗口（≤6 个/窗口），配合 `gadget_bak.txt` 的账号落盘 → 连续观看不再依赖重启进程；已实测「窗口内拒绝换号 / 窗口外自动换号 / 落盘剪枝」三条路径
+13. **全屏方向自适应**：竖屏视频全屏保持竖屏、横屏视频全屏放行转横（`orient_fix.js`），实测 544x720 改写、1280x720 放行、切换片源后再进全屏改写三种序列，用户真机复核通过
 
 **没完成 / 未覆盖**（都是可选加固，不影响当前可用）：
 - **未做防篡改对抗**：服务端若改成把 flag 与 path/videoId 一起入签，或校验 `deviceId` 与账号绑定关系，当前替换会失效。届时需要回到现签路线（`getVideoById` 不烧额度，可继续 mint 游客）。
@@ -211,10 +227,11 @@ cd /d/shuaji/14 && MSYS_NO_PATHCONV=1 adb -s 55434d6 shell \
 看到 `[替换] 12秒 key -> 正片 key` 与 `定时续期 … 状态码 200 … 已现签 1 前缀 key` 即为正常；
 出现 `换号节流：30 分钟内已换 N 个，等下一轮` 说明额度耗尽且窗口内已换满 6 个 —— 不用管，窗口过期后（≤30 分钟）会自动续号；
 只出现 `遇到 0 前缀 key 但还没有可用 1 前缀 key` 且没有节流行，才说明现签链路真断了（token 失效），跑一次 `python mint_probe.py <HOST>` 重新拿到有效游客 token 并更新 `creds/`。
+全屏方向一眼核查：`su -c 'grep 方向 /data/data/com.example.yinqishe_app/gadget_play.log | tail -5'`，竖屏片应见 `-> 改为 12`，横屏片应见 `横屏，放行`。
 状态文件与设备端脚本核查：
 ```bash
 cd /d/shuaji/14
 MSYS_NO_PATHCONV=1 adb -s 55434d6 shell "su -c 'cd /data/data/com.example.yinqishe_app && ls -l gadget_bak.txt gadget_mint.txt && cat gadget_mint.txt'"
 MSYS_NO_PATHCONV=1 adb -s 55434d6 shell "su -c 'find /data/app -name libgadget.script.so -exec md5sum {} \;'"
-# 期望：md5 = 5c043309b8d4252aed1c01363ea6ea17（= 本地 gadget/full_play.script.js）
+# 期望：md5 = 8be5ad61336e358c2115c56c08682e98（= 本地 gadget/full_play.script.js）
 ```

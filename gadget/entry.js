@@ -4,3 +4,4 @@ const bridge = mod && typeof mod.perform === 'function' ? mod : (mod && mod.defa
 globalThis.Java = bridge;
 require('./full_play.js');
 require('./mpv_tune.js');
+require('./orient_fix.js');

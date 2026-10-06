@@ -8,14 +8,15 @@
 
 ---
 
-## 结论：两个独立缺陷
+## 结论：三个独立缺陷
 
-最初的症状「在线播放卡顿」实际是两件事，都已修复并在真机实测通过：
+最初的症状「在线播放卡顿」实际是三件事，都已修复并在真机实测通过：
 
 | # | 症状 | 根因 | 修复 | 状态 |
 |---|---|---|---|---|
 | A | 播几秒就冻结 / 反复缓冲 | app 把 mpv 前向缓冲压到 `demuxer-readahead-secs≈1s`，分片一慢就 underrun | hook `libmpv.so`，按 handle 强设 readahead=30s / 96MiB，并拦截 app 自己下发的窄参数 | ✅ |
 | B | 只能看 12 秒 | 服务端签发的 `auth_key` 第三段首位 flag=0 → CDN `authPath` 只返回 12s 试看列表 | hook Dart 层 `authKey` 字符串，原地等长替换成合法签名的 1 前缀 key，并按 4 分钟周期现签续期 | ✅ |
+| C | 竖屏视频进全屏被强制横屏，画面缩成中间一条、上下大片黑边 | media_kit_video 的全屏默认无条件请求横屏族方向（`setRequestedOrientation(11)`），不看视频宽高 | hook `Activity.setRequestedOrientation`：横屏族请求先经 mpv 读当前视频宽高（按 rotate 修正），竖屏改写为同语义竖屏族，横屏放行，读不到宽高也放行 | ✅ |
 
 实测口径：**播放位置 vs 墙钟的累计漂移**（唯一可信指标）与 SurfaceFlinger 出帧节奏，全程不使用截图。
 代表数据：28:41 的视频连续播到 23:19，`步进=63s / 墙钟 62.9s / 累计落后 -0.0s`；60s 采样平均 49.1 fps、`>120ms` 掉帧 0 次；demuxer 缓冲中位从 2.5s 升到 101s，underrun 从 2 次降到 0 次。
@@ -34,7 +35,8 @@
 ├── gadget/                    常驻 JS（两条修复线）
 │   ├── entry.js               frida-java-bridge + require 两份脚本
 │   ├── full_play.js           12 秒 → 正片：authKey 等长替换 + 现签续期 + 跨进程节流
-│   ├── mpv_tune.js            卡顿：按 handle 强设 demuxer 缓冲并回读纠偏
+│   ├── mpv_tune.js            卡顿：按 handle 强设 demuxer 缓冲并回读纠偏（顺带暴露当前 handle 给 orient_fix）
+│   ├── orient_fix.js          全屏方向自适应：竖屏片竖屏全屏、横屏片放行转横
 │   ├── build_script.py        frida-compile 打包 + 前置 blutter helpers
 │   ├── package.json           frida-compile@19 / frida-java-bridge@7
 │   └── package-lock.json      锁死 19.1.0 / 7.0.13，保证 bundle md5 可复现
@@ -90,11 +92,11 @@ python flutter_static_patch.py
 
 # 3) JS → gadget 可直加载的单文件 bundle
 cd gadget && npm install && python build_script.py && cd ..
-#    → gadget/full_play.script.js        917 798 B / md5 5c043309b8d4252aed1c01363ea6ea17
+#    → gadget/full_play.script.js        922 558 B / md5 8be5ad61336e358c2115c56c08682e98
 
 # 4) 打进 APK 并重签
 python gadget_pack.py gadget/full_play.script.js gadget_full_signed.apk
-#    → gadget_pack/gadget_full_signed.apk 69 260 671 B / md5 7f7861a3bb57a2f615fd67b5127bc927
+#    → gadget_pack/gadget_full_signed.apk 69 264 767 B / md5 711ac31f0f1bccc7cc5d0ea26b307953
 
 # 5) 装机
 adb -s <SERIAL> install -r gadget_pack/gadget_full_signed.apk
@@ -106,7 +108,7 @@ adb -s <SERIAL> install -r gadget_pack/gadget_full_signed.apk
 
 ```bash
 MSYS_NO_PATHCONV=1 adb -s <SERIAL> shell "su -c 'find /data/app -name libgadget.script.so -exec md5sum {} \;'"
-# 期望 5c043309b8d4252aed1c01363ea6ea17
+# 期望 8be5ad61336e358c2115c56c08682e98
 ```
 
 ---
@@ -140,7 +142,7 @@ python play_watch.py 12 45            # 长播漂移监控
 MSYS_NO_PATHCONV=1 adb -s <SERIAL> shell "su -c 'tail -40 /data/data/com.example.yinqishe_app/gadget_play.log'"
 ```
 
-正常日志长相：`[替换] 12秒 key -> 正片 key`、`定时续期 … 状态码 200 … 已现签 1 前缀 key`、`mpv` 侧 `readahead-secs=30 max-bytes=100663296`。
+正常日志长相：`[替换] 12秒 key -> 正片 key`、`定时续期 … 状态码 200 … 已现签 1 前缀 key`、`mpv` 侧 `readahead-secs=30 max-bytes=100663296`、进全屏时 `方向请求 11 但视频 544x720 是竖屏 -> 改为 12`（竖屏片）或 `方向请求 11，视频 1280x720 横屏，放行`（横屏片）。
 
 异常判读：
 

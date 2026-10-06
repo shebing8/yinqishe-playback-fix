@@ -160,6 +160,7 @@ function install() {
         applyHandle(h, "初设");
       }
       var now = Date.now();
+      globalThis.__mpvCur = { ptr: h, ts: now };   // orient_fix 靠它读当前视频宽高
       if (now - lastEnforce >= ENFORCE_MS) {
         lastEnforce = now;
         enforce(h);
