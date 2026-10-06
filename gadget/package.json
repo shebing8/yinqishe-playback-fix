@@ -1,0 +1,17 @@
+{
+  "name": "gadget",
+  "version": "1.0.0",
+  "description": "",
+  "main": "full_play.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "frida-compile": "^19.1.0",
+    "frida-java-bridge": "^7.0.13"
+  }
+}
