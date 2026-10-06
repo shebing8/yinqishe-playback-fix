@@ -1,0 +1,2 @@
+# 统一按 LF 入库，避免 Windows 换行差异污染脚本
+* text=auto eol=lf

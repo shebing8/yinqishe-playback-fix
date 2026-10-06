@@ -1,0 +1,9 @@
+# Python 3.10+；取证与打包脚本的第三方依赖
+lief>=0.14
+cryptography>=42
+
+# 系统侧工具（不由 pip 管理，路径可用环境变量覆盖，见 README「环境」）
+#   adb                 Android platform-tools
+#   zipalign/apksigner  Android SDK build-tools 34.x
+#   keytool             JDK（apksigner 需要 JAVA_HOME）
+#   npx frida-compile   npm 依赖见 gadget/package.json

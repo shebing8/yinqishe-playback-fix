@@ -1,0 +1,27 @@
+# —— 目标 app 与派生二进制：体积大、属第三方，不入库，按 README「重建链路」自行生成 ——
+/base.apk
+/static_patch/
+/so/
+/blutter/
+/blutter_output/
+/gadget/libgadget.so
+/gadget/node_modules/
+/gadget/bundle-entry.js
+/gadget/full_play.script.js
+/gadget_pack/
+
+# —— 凭据与账号状态（token / deviceId / 设备侧副本），永不入库 ——
+/creds/*
+!/creds/README.md
+
+# —— 与本项目链路无关、仅本地保留的工具 ——
+/apk_ad_patch.py
+
+# —— 调试输出 ——
+*.log
+*.pid
+ui_*.xml
+*.png
+*.mp4
+__pycache__/
+*.py[cod]
