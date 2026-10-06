@@ -36,7 +36,8 @@
 │   ├── full_play.js           12 秒 → 正片：authKey 等长替换 + 现签续期 + 跨进程节流
 │   ├── mpv_tune.js            卡顿：按 handle 强设 demuxer 缓冲并回读纠偏
 │   ├── build_script.py        frida-compile 打包 + 前置 blutter helpers
-│   └── package.json           frida-compile@19 / frida-java-bridge@7
+│   ├── package.json           frida-compile@19 / frida-java-bridge@7
+│   └── package-lock.json      锁死 19.1.0 / 7.0.13，保证 bundle md5 可复现
 │
 ├── gadget_pack.py             ELF/APK 组装器：LIEF 注入 DT_NEEDED + config + script + 重签
 ├── flutter_static_patch.py    前置静态补丁：libapp.so 指令级替换 + keytool 自签
@@ -60,7 +61,7 @@
 | 组件 | 版本 | 用途 |
 |---|---|---|
 | Python | 3.10+ | 全部脚本；`pip install -r requirements.txt`（`lief`、`cryptography`） |
-| Node.js + npm | 20+ | `cd gadget && npm install`（`frida-compile@^19.1.0`、`frida-java-bridge@^7.0.13`） |
+| Node.js + npm | 20+ | `cd gadget && npm ci`（锁版：`frida-compile@19.1.0`、`frida-java-bridge@7.0.13`；`npm install` 的浮动版本可能改变 bundle 长度） |
 | frida-gadget | **17.22.1 android-arm64** | 解出 `libgadget.so` 放到 `gadget/libgadget.so`（Frida 17 无内置 Java 桥，必须自行打桥） |
 | Android SDK build-tools | 34.x | `zipalign` / `apksigner`；不在 PATH 时用环境变量 `ZIPALIGN` / `APKSIGNER` 指路径 |
 | JDK | 9+ | `keytool` 生成签名用 keystore，`apksigner` 需要 `JAVA_HOME` |
@@ -164,7 +165,7 @@ MSYS_NO_PATHCONV=1 adb -s <SERIAL> shell "su -c 'tail -40 /data/data/com.example
 
 折算：每个游客 `freeWatches=50` → 30 分钟最多 6 个号 = 300 部 / 30 分钟的续号余量。额度只在真实观看时消耗，`getVideoById` 现签不扣。
 
-仓库里唯一保留的运行时值是 `gadget/full_play.js` 顶部的两个兑底：备用 API 域名与备用 deviceId。它们只在冷启动、app 还没发出自己的 authPath 时用作初值，随后会被运行时学到的域名校正；会话 JWT 从不写进脚本。这两行保持原样，是为了让源码仍能逐字编译出 REPORT §2.5 里那个 md5 的产物。
+仓库里唯一保留的运行时值是 `gadget/full_play.js` 顶部的两个兜底：备用 API 域名与备用 deviceId。它们只在冷启动、app 还没发出自己的 authPath 时用作初值，随后会被运行时学到的域名校正；会话 JWT 从不写进脚本。这两行保持原样，是为了让源码仍能逐字编译出 REPORT §2.5 里那个 md5 的产物。
 
 ---
 

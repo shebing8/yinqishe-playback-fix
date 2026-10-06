@@ -563,5 +563,5 @@ ensureJava();
     return;
   }
   if (tries < 150) setTimeout(function () { waitLibapp(tries + 1); }, 100);
-  else log("等不到 libapp.so，跳过");
+  else log("等不到 libapp.so，放弃");
 })(0);
